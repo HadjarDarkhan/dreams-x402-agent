@@ -9,94 +9,110 @@ const { app, addEntrypoint } = createAgentApp(
     description: "Paid mini-games (coin, lucky, dice) on Base via x402",
   },
   {
-    // це вмикає читання цін з env / конфіга
+    // берeмо з env: X402_NETWORK, FACILITATOR_URL, PAY_TO_ADDRESS
     useConfigPayments: true,
   }
 );
 
-// 👉 1) робимо м'який парсер, щоб приймав і {game:"..."}, і {input:"..."}, і {number:...}
+// 🟩 допоміжний парсер
 function normalize(body: any) {
   const b = body || {};
-
-  let game =
-    b.game ||
-    b.mode ||
-    b.type ||
-    (b.input &&
-      String(b.input).toLowerCase().includes("lucky") &&
-      "lucky_number") ||
-    (b.input &&
-      String(b.input).toLowerCase().includes("dice") &&
-      "dice_roll") ||
-    "coin_flip";
-
   const choice = b.choice || b.input || b.user_input || null;
   const guess = b.guess || b.number || b.dice || null;
-
-  return { game, choice, guess };
+  return { choice, guess, body: b };
 }
 
-/**
- * ВАЖЛИВО:
- * у x402 ціна фіксується на рівні ендпоінта (ще до оплати) — це прямо в протоколі. :contentReference[oaicite:2]{index=2}
- * Тому ми робимо КІЛЬКА ендпоінтів, а не одну "магічну" гру.
- */
-const ENTRYPOINTS = [
-  // мінімалка: завжди coin flip
-  {
-    key: "coin.micro",
+// 🟩 1. $0.01 — coin flip
+addEntrypoint({
+  key: "coin.micro",
+  // ← ВАЖЛИВО: вказуємо оплату прямо тут
+  payments: {
     price: "$0.01",
-    defaultGame: "coin_flip",
+    network: process.env.X402_NETWORK,
+    facilitatorUrl: process.env.FACILITATOR_URL,
+    payTo: process.env.PAY_TO_ADDRESS,
   },
-  // трохи дорожче: lucky
-  {
-    key: "lucky.low",
+  handler: async (ctx) => {
+    const parsed = normalize(ctx.body);
+    const result = playGame({ game: "coin_flip", ...parsed });
+    return {
+      spent: "$0.01",
+      ...result,
+      message:
+        result.ok
+          ? `✅ You spent $0.01 and played coin_flip. ${result.text}`
+          : `❌ You spent $0.01 but failed: ${result.text}`,
+    };
+  },
+});
+
+// 🟩 2. $0.10 — lucky number
+addEntrypoint({
+  key: "lucky.low",
+  payments: {
     price: "$0.10",
-    defaultGame: "lucky_number",
+    network: process.env.X402_NETWORK,
+    facilitatorUrl: process.env.FACILITATOR_URL,
+    payTo: process.env.PAY_TO_ADDRESS,
   },
-  // середня: dice
-  {
-    key: "dice.mid",
-    price: "$1",
-    defaultGame: "dice_roll",
+  handler: async (ctx) => {
+    const parsed = normalize(ctx.body);
+    const result = playGame({ game: "lucky_number", ...parsed });
+    return {
+      spent: "$0.10",
+      ...result,
+      message:
+        result.ok
+          ? `✅ You spent $0.10 and played lucky_number. ${result.text}`
+          : `❌ You spent $0.10 but failed: ${result.text}`,
+    };
   },
-  // хайролл: теж dice, але шанс можна збільшити у games.ts (потім)
-  {
-    key: "dice.high",
-    price: "$10",
-    defaultGame: "dice_roll",
+});
+
+// 🟩 3. $1 — dice
+addEntrypoint({
+  key: "dice.mid",
+  payments: {
+    price: "$1.00",
+    network: process.env.X402_NETWORK,
+    facilitatorUrl: process.env.FACILITATOR_URL,
+    payTo: process.env.PAY_TO_ADDRESS,
   },
-];
+  handler: async (ctx) => {
+    const parsed = normalize(ctx.body);
+    const result = playGame({ game: "dice_roll", ...parsed });
+    return {
+      spent: "$1.00",
+      ...result,
+      message:
+        result.ok
+          ? `✅ You spent $1.00 and played dice_roll. ${result.text}`
+          : `❌ You spent $1.00 but failed: ${result.text}`,
+    };
+  },
+});
 
-for (const ep of ENTRYPOINTS) {
-  addEntrypoint({
-    key: ep.key,
-    // agent-kit сам зробить /entrypoints/<key>/invoke
-    handler: async (ctx) => {
-      const payload = normalize(ctx.body);
-      // якщо юзер не прислав game → беремо дефолт з ендпоінта
-      if (!payload.game) {
-        payload.game = ep.defaultGame;
-      }
-
-      const result = playGame(payload);
-
-      // ❗️тут ми формуємо ЛЮДИНО-дружню відповідь
-      return {
-        ok: result.ok,
-        game: result.game,
-        spent: ep.price, // 👈 ти витратив
-        tier: ep.key,
-        messageUk: result.ok
-          ? `✅ Ви витратили ${ep.price} і зіграли в ${result.game}. ${result.text}`
-          : `❌ Ви витратили ${ep.price}, але сталася помилка: ${result.text}`,
-        messageEn: result.ok
-          ? `✅ You spent ${ep.price} and played ${result.game}. ${result.text}`
-          : `❌ You spent ${ep.price}, but there was an error: ${result.text}`,
-        ...result,
-      };
-    },
-  });
-}
+// 🟩 4. $10 — dice highroll
+addEntrypoint({
+  key: "dice.high",
+  payments: {
+    price: "$10.00",
+    network: process.env.X402_NETWORK,
+    facilitatorUrl: process.env.FACILITATOR_URL,
+    payTo: process.env.PAY_TO_ADDRESS,
+  },
+  handler: async (ctx) => {
+    const parsed = normalize(ctx.body);
+    const result = playGame({ game: "dice_roll", ...parsed });
+    return {
+      spent: "$10.00",
+      ...result,
+      message:
+        result.ok
+          ? `✅ You spent $10.00 and played dice_roll (high). ${result.text}`
+          : `❌ You spent $10.00 but failed: ${result.text}`,
+    };
+  },
+});
 
 export default app;
