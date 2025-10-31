@@ -1,124 +1,69 @@
+// src/index.ts
 import { createAgentApp } from "@lucid-dreams/agent-kit";
-import { z } from "zod";
-import { runGame } from "./games";
+import { playGame } from "./games"; // ми це вже робили
 
-const payTo = process.env.PAY_TO_ADDRESS as `0x${string}` | undefined;
-const facilitatorUrl =
-  process.env.FACILITATOR_URL ??
-  "https://x402.cdp.coinbase.com/facilitator";
-const network = (process.env.X402_NETWORK as any) ?? "base";
-
-// create app that already has 402 + 8004 hooks (as in X posts) citeturn1search4turn1search8
 const { app, addEntrypoint } = createAgentApp(
   {
-    name: "Ponzi MiniGames x402 Agent (Lucid)",
-    version: "1.0.0",
-    description: "x402 mini-games (coin flip, lucky number, dice) built on @lucid-dreams/agent-kit"
+    name: "Ponzi MiniGames x402 Agent",
+    version: "1.0.2",
+    description: "x402 mini-games (coin / lucky / dice) on Base, powered by daydreams",
   },
   {
     useConfigPayments: true,
-    config: {
-      payments: {
-        payTo: (payTo ??
-          "0x0000000000000000000000000000000000000000") as `0x${string}`,
-        facilitatorUrl,
-        network,
-        defaultPrice: "$0.01"
-      }
-    }
   }
 );
 
-// спільна схема
-const InputSchema = z.object({
-  game: z.enum(["coin_flip", "lucky_number", "dice_roll"]),
-  choice: z.string().optional(),
-  guess: z.number().int().optional()
-});
+// 🔧 перетворювач того, що шле x402scan → на те, що чекає наш код
+function normalizePayload(raw: any) {
+  const body = raw ?? {};
 
-const tiers: Record<
-  string,
-  {
-    price: string;
-    win_profile: Record<"coin_flip" | "lucky_number" | "dice_roll", number>;
-  }
-> = {
-  micro: {
-    price: "$0.01",
-    win_profile: {
-      coin_flip: 0.35,
-      lucky_number: 0.14,
-      dice_roll: 0.22
-    }
-  },
-  low: {
-    price: "$0.10",
-    win_profile: {
-      coin_flip: 0.42,
-      lucky_number: 0.18,
-      dice_roll: 0.28
-    }
-  },
-  mid: {
-    price: "$1.00",
-    win_profile: {
-      coin_flip: 0.48,
-      lucky_number: 0.22,
-      dice_roll: 0.33
-    }
-  },
-  high: {
-    price: "$10.00",
-    win_profile: {
-      coin_flip: 0.55,
-      lucky_number: 0.3,
-      dice_roll: 0.4
-    }
-  }
-};
+  // 1) яку гру граємо
+  // x402scan майже завжди нічого не шле → ставимо coin_flip
+  const game =
+    body.game ||
+    body.mode ||
+    body.type ||
+    "coin_flip";
 
-// реєструємо entrypoints під lucid-dreams/agent-kit
-for (const [tierName, cfg] of Object.entries(tiers)) {
+  // 2) що саме вибрав юзер
+  // у твоєму скріні було "HEADS" — тобто швидше за все летить поле input
+  const choiceRaw = body.choice || body.input || body.user_input || body.option;
+  const choice = choiceRaw ? String(choiceRaw).toLowerCase() : "heads";
+
+  // 3) для lucky/dice
+  const guess =
+    body.guess ||
+    body.number ||
+    body.dice ||
+    null;
+
+  return { game, choice, guess };
+}
+
+// ми ж робили 4 тира → залишаємо
+const tiers = [
+  { key: "micro", price: "$0.01" },
+  { key: "low", price: "$0.10" },
+  { key: "mid", price: "$1" },
+  { key: "high", price: "$10" },
+];
+
+for (const tier of tiers) {
   addEntrypoint({
-    key: `play.${tierName}`,
-    description: `Play minigame at ${cfg.price}`,
-    input: InputSchema,
-    price: cfg.price,
-    network: network,
-    async handler(ctx) {
-      const body = await ctx.input;
-      const res = runGame(
-        body.game,
-        tierName,
-        cfg.win_profile[body.game],
-        body
-      );
+    key: `play.${tier.key}`,
+    // agent-kit сам повісить /entrypoints/play.X/invoke
+    handler: async (ctx) => {
+      // ctx.body може бути undefined → ловимо
+      const payload = normalizePayload(ctx.body);
+      // віддаємо уніфікований формат
+      const result = await playGame(payload);
       return {
-        output: {
-          ...res,
-          proof: {
-            tier: tierName,
-            price: cfg.price
-          }
-        }
+        tier: tier.key,
+        paid: true,
+        ...result,
       };
-    }
+    },
   });
 }
 
-// простий health
-app.get("/", (c) =>
-  c.json({
-    name: "Ponzi MiniGames x402 Agent (Lucid)",
-    status: "ok",
-    endpoints: Object.keys(tiers).map((t) => `/play.${t}`),
-    network
-  })
-);
-
-// Bun-style export
-const port = Number(process.env.PORT ?? 8000);
-export default {
-  port,
-  fetch: app.fetch
-};
+export default app;

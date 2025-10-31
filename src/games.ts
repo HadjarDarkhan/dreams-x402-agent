@@ -1,62 +1,53 @@
-import { randomInt } from "crypto";
+// src/games.ts
+export async function playGame(opts: {
+  game: string;
+  choice?: string;
+  guess?: number | string | null;
+}) {
+  const game = (opts.game || "coin_flip").toLowerCase();
 
-export type GameName = "coin_flip" | "lucky_number" | "dice_roll";
-
-export function runGame(
-  game: GameName,
-  tier: string,
-  winProb: number,
-  payload: any
-) {
   if (game === "coin_flip") {
-    const userChoice = (payload?.choice ?? "heads").toLowerCase();
-    const flip = Math.random() < 0.5 ? "heads" : "tails";
-
-    let win = false;
-    if (userChoice === flip && Math.random() < winProb) {
-      win = true;
-    }
-
+    const userChoice = (opts.choice || "heads").toLowerCase();
+    const outcome = Math.random() < 0.5 ? "heads" : "tails";
+    const win = outcome === userChoice;
     return {
       game: "coin_flip",
       userChoice,
-      serverFlip: flip,
+      outcome,
       win,
-      tier,
-      xpReward: win ? 15 : 3,
-      message: win ? "🎉 Ти виграв!" : "😔 Цього разу не пощастило."
+      message: win ? "You won the flip 🎉" : "You lost the flip 😅",
     };
   }
 
-  if (game === "lucky_number") {
-    const guess = Number(payload?.guess ?? 7);
-    const winningNumber = randomInt(1, 11); // 1-10
-    const win = guess === winningNumber && Math.random() < winProb;
+  if (game === "lucky" || game === "lucky_number") {
+    const target = Math.floor(Math.random() * 10) + 1;
+    const userGuess = Number(opts.guess || opts.choice || 1);
+    const win = target === userGuess;
     return {
       game: "lucky_number",
-      userGuess: guess,
-      winningNumber,
+      userGuess,
+      target,
       win,
-      tier,
-      xpReward: win ? 30 : 5,
-      message: win ? "🔮 Вгадав число!" : "Не вгадав. Спробуй ще."
+      message: win ? "You guessed the number! 🔥" : "Not this time, try again.",
     };
   }
 
-  if (game === "dice_roll") {
-    const guess = Number(payload?.guess ?? 3);
-    const dice = randomInt(1, 7); // 1-6
-    const win = guess === dice && Math.random() < winProb;
+  if (game === "dice" || game === "dice_roll") {
+    const rolled = Math.floor(Math.random() * 6) + 1;
+    const userGuess = Number(opts.guess || opts.choice || 1);
+    const win = rolled === userGuess;
     return {
       game: "dice_roll",
-      userGuess: guess,
-      dice,
+      userGuess,
+      rolled,
       win,
-      tier,
-      xpReward: win ? 20 : 4,
-      message: win ? "🎲 Красиво!" : "Мимо. Ще одна спроба?"
+      message: win ? "Nice, correct dice roll! 🎲" : "Dice said nope 😅",
     };
   }
 
-  throw new Error("Unknown game");
+  // fallback — якщо агент надіслав взагалі щось своє
+  return {
+    game: game,
+    message: "Game type not recognized, but payment was processed.",
+  };
 }
