@@ -1,0 +1,15 @@
+{
+  "name": "dreams",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "@lucid-dreams/agent-kit": "^0.2.18",
+    "hono": "^4.6.9",
+    "zod": "^3.24.1"
+  }
+}
