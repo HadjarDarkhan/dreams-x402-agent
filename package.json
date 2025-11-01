@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@lucid-dreams/agent-kit": "^0.2.18",
+    "ethers": "^6.15.0",
     "hono": "^4.6.9",
     "zod": "^3.24.1"
   }
