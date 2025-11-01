@@ -1,7 +1,8 @@
 // src/payout.ts
 import { ethers } from "ethers";
 
-// USDC на Base
+// офіційний USDC на Base mainnet
+// https://docs.base.org/token-list  (дивись USDC) :contentReference[oaicite:2]{index=2}
 const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 
 const USDC_ABI = [
@@ -12,10 +13,10 @@ const USDC_ABI = [
 const RPC_URL = process.env.RPC_URL || "https://mainnet.base.org";
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 
-// прибрати \n, \r, пробіли й додати 0x
-function normalizePrivateKey(pk?: string | null): string | null {
-  if (!pk) return null;
-  let cleaned = pk.trim().replace(/[\r\n\s]+/g, "");
+// приберемо \r \n і додамо 0x якщо нема
+function normalizePrivateKey(raw?: string | null): string | null {
+  if (!raw) return null;
+  let cleaned = raw.trim().replace(/[\r\n\s]+/g, "");
   if (!cleaned.startsWith("0x")) cleaned = "0x" + cleaned;
   return cleaned;
 }
@@ -30,64 +31,60 @@ try {
   if (NORMALIZED_PK) {
     wallet = new ethers.Wallet(NORMALIZED_PK, provider);
     usdc = new ethers.Contract(USDC_ADDRESS, USDC_ABI, wallet);
-    console.log("✅ Payout wallet:", wallet.address);
+    console.log("[payout] wallet loaded:", wallet.address);
   } else {
-    console.warn("⚠️ PAYOUT_PRIVATE_KEY is not set — payouts disabled");
+    console.warn("[payout] PAYOUT_PRIVATE_KEY not set — payouts disabled");
   }
 } catch (err) {
-  console.error("❌ Invalid PAYOUT_PRIVATE_KEY, payouts disabled:", err);
+  console.error("[payout] invalid PAYOUT_PRIVATE_KEY → payouts disabled", err);
   wallet = null;
   usdc = null;
 }
 
-// скільки ми НІКОЛИ не видаємо, навіть якщо гравець виграв
+// мінімум, який ми НЕ чіпаємо
 const SAFETY_USDC =
   process.env.PAYOUT_SAFETY_USDC !== undefined
     ? Number(process.env.PAYOUT_SAFETY_USDC)
-    : 1.0;
+    : 1.0; // 1 USDC за замовчуванням
 
-// перевірити, чи можемо зараз видати Х USDC
+// ця функція тільки дивиться, чи ми МОЖЕМО заплатити
 export async function canPayout(amount: number) {
   if (!wallet || !usdc) {
-    return {
-      ok: false,
-      reason: "payout_disabled",
-      balance: 0,
-      safety: SAFETY_USDC,
-    };
+    return { ok: false, reason: "payout_disabled", balance: 0, needed: amount };
   }
 
-  const balanceRaw = await usdc.balanceOf(wallet.address);
-  const balance = Number(ethers.formatUnits(balanceRaw, 6));
+  const balRaw = await usdc.balanceOf(wallet.address);
+  const balance = Number(ethers.formatUnits(balRaw, 6));
+  const needed = amount + SAFETY_USDC;
 
-  const can = balance - amount >= SAFETY_USDC;
-
-  return {
-    ok: can,
-    reason: can ? "ok" : "not_enough_funds",
-    balance,
-    safety: SAFETY_USDC,
-  };
+  if (balance >= needed) {
+    return { ok: true, balance, needed };
+  }
+  return { ok: false, reason: "not_enough_funds", balance, needed };
 }
 
-// власне виплата
+// а ця вже реально шле USDC
 export async function payWinner(playerAddress: string, amount: number) {
   if (!wallet || !usdc) {
     return { paid: false, reason: "payout_disabled" };
   }
+
   if (!ethers.isAddress(playerAddress)) {
     return { paid: false, reason: "invalid_player_address" };
   }
 
-  // SECOND CHECK – щоб за цей час хтось не вивів усе
-  const can = await canPayout(amount);
-  if (!can.ok) {
-    return { paid: false, reason: can.reason, balance: can.balance };
+  // ще раз перевіримо баланс (про всяк)
+  const check = await canPayout(amount);
+  if (!check.ok) {
+    return { paid: false, reason: check.reason ?? "not_enough_funds" };
   }
 
   const amountRaw = ethers.parseUnits(amount.toFixed(6), 6);
   const tx = await usdc.transfer(playerAddress, amountRaw);
   const receipt = await tx.wait();
 
-  return { paid: true, txHash: receipt.hash };
+  return {
+    paid: true,
+    txHash: receipt.hash,
+  };
 }

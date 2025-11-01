@@ -1,106 +1,88 @@
 // src/index.ts
 import { createAgentApp } from "@lucid-dreams/agent-kit";
-import { payWinner, canPayout } from "./payout";
+import { canPayout, payWinner } from "./payout";
+import { GAMES } from "./config";
 
+// головний застосунок агента
 const { app, addEntrypoint } = createAgentApp(
   {
     name: "Ponzi MiniGames x402 Agent",
-    version: "1.3.0",
+    version: "1.3.1",
     description: "Paid mini-games (coin, lucky, dice) on Base via x402",
   },
   {
-    // самі ставимо payments
+    // ⚠️ важливо: ми самі ставимо payments на кожен ендпойнт
+    // інакше агент вважатиме їх безкоштовними
     useConfigPayments: false,
   }
 );
 
-// таблиця ігор (price = що платить гравець, payout = що ми даємо при win)
-const GAMES: Record<
-  string,
-  { price: number; payout: number; winChance: number; kind: string }
-> = {
-  "coin.micro": {
-    price: 0.01,
-    payout: 0.02,
-    winChance: 0.38,
-    kind: "coin_flip",
-  },
-  "lucky.low": {
-    price: 0.1,
-    payout: 0.2,
-    winChance: 0.45,
-    kind: "lucky_number",
-  },
-  "dice.mid": {
-    price: 1,
-    payout: 1.7,
-    winChance: 0.4,
-    kind: "dice_roll",
-  },
-  "dice.high": {
-    price: 10,
-    payout: 14,
-    winChance: 0.35,
-    kind: "dice_roll",
-  },
-};
-
-const NETWORK =
-  process.env.NETWORK || process.env.X402_NETWORK || "base";
+// мережа і платіжні реквізити для 402
+const NETWORK = process.env.NETWORK || process.env.X402_NETWORK || "base";
 const PAY_TO = process.env.ADDRESS || process.env.PAY_TO_ADDRESS || "";
 const FACILITATOR =
   process.env.FACILITATOR_URL ||
-  "https://facilitator.daydreams.systems";
+  // офіційний фасілітатор із доків x402
+  "https://facilitator.daydreams.systems"; // :contentReference[oaicite:1]{index=1}
 
-function addGameEntrypoint(key: keyof typeof GAMES) {
+// хелпер щоб згенерити чотири ендпойнти
+function registerGame(key: keyof typeof GAMES) {
   const cfg = GAMES[key];
 
   addEntrypoint({
     key,
-    // 402 тут ✅
+    description: cfg.description,
+    // 👇 ось це й змушує роут повернути 402, якщо гра ще не оплачена
     payments: {
-      price: `$${cfg.price}`,
-      network: NETWORK,
+      price: `$${cfg.price}`,        // ОБОВ’ЯЗКОВО рядок з $
+      network: NETWORK,              // "base" або "base-sepolia"
       facilitatorUrl: FACILITATOR,
       payTo: PAY_TO,
     },
     handler: async (ctx) => {
-      const body = ctx.body || {};
+      const body = (ctx.body ?? {}) as Record<string, any>;
       const playerAddress: string | undefined =
         body.playerAddress || body.address || body.wallet;
 
-      // 1. перевіряємо, чи можемо реально заплатити
-      const liq = await canPayout(cfg.payout);
-      const lowLiquidity = !liq.ok;
-
-      // 2. Розіграш
-      let win = false;
-      let rollInfo: any = {};
-
-      if (lowLiquidity) {
-        // 💡 режим “касі треба підрости”
-        win = false;
-        rollInfo = {
-          forcedLoss: true,
-          msg: "treasury too low, payout skipped",
-        };
-      } else {
-        // нормальний режим
-        const rnd = Math.random();
-        win = rnd < cfg.winChance;
-        rollInfo = { rnd, forcedLoss: false };
+      // 1. перевіряємо, чи взагалі можемо платити зараз
+      // (але НЕ віддаємо це користувачу)
+      let liquidityOk = true;
+      try {
+        const liq = await canPayout(cfg.payout);
+        liquidityOk = liq.ok;
+        // лог лишаємо тільки в консолі
+        console.log(
+          `[liquidity] game=${key} ok=${liq.ok} balance=${liq.balance} needed=${liq.needed}`
+        );
+      } catch (err) {
+        // якщо RPC впало — гра не ламається, просто не платимо
+        console.error("[liquidity] error:", err);
+        liquidityOk = false;
       }
 
-      // 3. якщо виграв — платимо
-      let payoutResult: any = { paid: false, reason: "not_triggered" };
+      // 2. розіграш
+      // якщо казна низька — ми не даємо виграти, щоб наростити пул
+      const rnd = Math.random();
+      const naturalWin = rnd < cfg.winChance;
+      const win = liquidityOk ? naturalWin : false;
+
+      // 3. якщо виграв і дав адресу — пробуємо надіслати USDC
+      let payout = { paid: false, reason: "not_triggered" as string, txHash: "" };
       if (win && playerAddress) {
-        payoutResult = await payWinner(playerAddress, cfg.payout);
+        payout = await payWinner(playerAddress, cfg.payout);
+      } else if (win && !playerAddress) {
+        // виграв, але не дав адресу — ми не віддаємо, а просто кажемо чому
+        payout = {
+          paid: false,
+          reason: "no_player_address",
+          txHash: "",
+        };
       }
 
-      // 4. скільки заробила хата на цій грі
+      // 4. рахунок дому
       const houseProfit = win ? cfg.price - cfg.payout : cfg.price;
       const houseEdge =
-        1 - (cfg.winChance * cfg.payout) / cfg.price; // теорія, як у казино :contentReference[oaicite:2]{index=2}
+        1 - (cfg.winChance * cfg.payout) / cfg.price; // теоретична перевага дому
 
       return {
         ok: true,
@@ -108,35 +90,46 @@ function addGameEntrypoint(key: keyof typeof GAMES) {
         game: cfg.kind,
         spent: `$${cfg.price}`,
         win,
+        // ↓ ось це ми лишаємо, бо фронту потрібно показати, СКІЛЬКИ МАВ би отримати
         payoutPlanned: `$${cfg.payout}`,
-        payout: payoutResult,
-        liquidityMode: lowLiquidity ? "low" : "normal",
-        liquidity: liq,
-        roll: rollInfo,
-        houseProfit,
+        // але сам стан виплати може бути "payout_disabled" або "not_enough_funds"
+        payout,
+        // користувачу НЕ віддаємо реальний баланс каси
+        // liquidity: ...  ← видалено
+        // індикатор тільки для фронту, щоб можна було показати "treasury low"
+        liquidityMode: liquidityOk ? "normal" : "low",
+        // для дебага / аналітики
+        roll: {
+          rnd,
+          forcedLoss: !liquidityOk,
+        },
+        // це нам треба щоб бачити в логах, скільки заробили
+        houseProfit: Number(houseProfit.toFixed(6)),
         houseEdge: Number(houseEdge.toFixed(3)),
-        messageUk: lowLiquidity
-          ? `❌ Ви заплатили $${cfg.price}. Зараз каса в режимі захисту, тому виграш не можливий. Ваш внесок додано. Спробуйте ще раз — шанси повернуться.`
+        // людські повідомлення
+        messageUk: !liquidityOk
+          ? `❌ Ви заплатили $${cfg.price}. Зараз каса в режимі захисту, виграш тимчасово вимкнено. Ваш внесок додано в пул.`
           : win
-          ? `✅ Ви заплатили $${cfg.price} і ВИГРАЛИ! Запланована виплата: $${cfg.payout}. Статус переказу: ${
-              payoutResult.paid ? "надіслано ✅" : payoutResult.reason
+          ? `✅ Ви заплатили $${cfg.price} і ВИГРАЛИ! Запланована виплата: $${cfg.payout}. Статус: ${
+              payout.paid ? "надіслано ✅" : payout.reason
             }.`
-          : `❌ Ви заплатили $${cfg.price}, але цього разу не пощастило. Пробуйте ще 💚`,
-        messageEn: lowLiquidity
-          ? `❌ You paid $${cfg.price}. Treasury is in protection mode, so winning is disabled for now. Your payment increased the pool. Try again in a moment.`
+          : `❌ Ви заплатили $${cfg.price}, але цього разу не пощастило. Спробуйте ще 👾`,
+        messageEn: !liquidityOk
+          ? `❌ You paid $${cfg.price}. Treasury is in protection mode, wins are disabled for now.`
           : win
-          ? `✅ You paid $${cfg.price} and WON! Payout: $${cfg.payout}. Tx: ${
-              payoutResult.txHash || payoutResult.reason
-            }`
+          ? `✅ You paid $${cfg.price} and WON! Payout: $${cfg.payout}. Status: ${
+              payout.paid ? "sent ✅" : payout.reason
+            }.`
           : `❌ You paid $${cfg.price} but lost. Try again.`,
       };
     },
   });
 }
 
-addGameEntrypoint("coin.micro");
-addGameEntrypoint("lucky.low");
-addGameEntrypoint("dice.mid");
-addGameEntrypoint("dice.high");
+// реєструємо всі 4
+registerGame("coin.micro");
+registerGame("lucky.low");
+registerGame("dice.mid");
+registerGame("dice.high");
 
 export default app;
