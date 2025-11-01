@@ -12,17 +12,12 @@ const USDC_ABI = [
 const RPC_URL = process.env.RPC_URL || "https://mainnet.base.org";
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 
-// 👇 функція, яка прибирає \n, \r, пробіли і додає 0x якщо його нема
+// прибрати \n, \r, пробіли, додати 0x
 function normalizePrivateKey(pk?: string | null): string | null {
   if (!pk) return null;
-  // прибрати початок/кінець
   let cleaned = pk.trim();
-  // прибрати всі переноси і пробіли всередині
   cleaned = cleaned.replace(/[\r\n\s]+/g, "");
-  // додати 0x якщо нема
-  if (!cleaned.startsWith("0x")) {
-    cleaned = "0x" + cleaned;
-  }
+  if (!cleaned.startsWith("0x")) cleaned = "0x" + cleaned;
   return cleaned;
 }
 
@@ -36,6 +31,7 @@ try {
   if (NORMALIZED_PK) {
     wallet = new ethers.Wallet(NORMALIZED_PK, provider);
     usdc = new ethers.Contract(USDC_ADDRESS, USDC_ABI, wallet);
+    console.log("✅ payout wallet:", wallet.address);
   } else {
     console.warn("⚠️ PAYOUT_PRIVATE_KEY is not set — payouts disabled");
   }
@@ -45,7 +41,7 @@ try {
   usdc = null;
 }
 
-// скільки залишати “в касі” (не видавати все)
+// скільки залишати в касі
 const SAFETY_USDC =
   process.env.PAYOUT_SAFETY_USDC !== undefined
     ? Number(process.env.PAYOUT_SAFETY_USDC)
@@ -60,11 +56,14 @@ export async function payWinner(playerAddress: string, amount: number) {
     return { paid: false, reason: "invalid_player_address" };
   }
 
-  // баланс у USDC (6 знаків)
+  // поточний баланс
   const balanceRaw = await usdc.balanceOf(wallet.address);
   const balance = Number(ethers.formatUnits(balanceRaw, 6));
 
   if (balance - amount < SAFETY_USDC) {
+    console.warn(
+      `⚠️ Not enough USDC for payout. balance=${balance}, want=${amount}, safety=${SAFETY_USDC}`
+    );
     return { paid: false, reason: "not_enough_funds" };
   }
 
